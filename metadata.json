@@ -1,0 +1,5 @@
+{
+  "name": "Client Project Hub",
+  "description": "A SaaS application to efficiently manage clients, their projects, and associated tasks. This tool provides a clear, organized interface for tracking project progress and client relationships, simplifying your workflow.",
+  "requestFramePermissions": []
+}
