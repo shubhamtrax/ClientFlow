@@ -11,11 +11,6 @@ export type View = 'dashboard' | 'clients' | 'projects' | 'tasks';
 
 const API_BASE_URL = '';
 
-// Helper to format DB data (e.g., convert number IDs to strings)
-const formatClient = (c: any): Client => ({ ...c, id: String(c.id) });
-const formatProject = (p: any): Project => ({ ...p, id: String(p.id), clientId: String(p.clientId) });
-const formatTask = (t: any): Task => ({ ...t, id: String(t.id), projectId: String(t.projectId) });
-
 const App: React.FC = () => {
     const [clients, setClients] = useState<Client[]>([]);
     const [projects, setProjects] = useState<Project[]>([]);
@@ -41,9 +36,9 @@ const App: React.FC = () => {
                 const projectsData = await projectsRes.json();
                 const tasksData = await tasksRes.json();
 
-                setClients(clientsData.map(formatClient));
-                setProjects(projectsData.map(formatProject));
-                setTasks(tasksData.map(formatTask));
+                setClients(clientsData);
+                setProjects(projectsData);
+                setTasks(tasksData);
 
             } catch (error) {
                 console.error("Failed to fetch initial data:", error);
@@ -61,7 +56,7 @@ const App: React.FC = () => {
         });
         if (response.ok) {
             const newClientData = await response.json();
-            setClients(prev => [...prev, formatClient(newClientData)]);
+            setClients(prev => [...prev, newClientData]);
         } else {
             console.error("Failed to add client");
         }
@@ -75,7 +70,7 @@ const App: React.FC = () => {
         });
         if (response.ok) {
             const savedClient = await response.json();
-            setClients(prev => prev.map(c => c.id === savedClient.id.toString() ? formatClient(savedClient) : c));
+            setClients(prev => prev.map(c => c.id === savedClient.id ? savedClient : c));
         } else {
             console.error("Failed to update client");
         }
@@ -86,6 +81,8 @@ const App: React.FC = () => {
             method: 'DELETE',
         });
         if (response.ok) {
+            // Because of "ON DELETE CASCADE" in Supabase, we just need to update the client list.
+            // For a faster UI, we can predictively remove associated projects and tasks from state.
             const clientProjectIds = projects
                 .filter(p => p.clientId === clientId)
                 .map(p => p.id);
@@ -106,7 +103,7 @@ const App: React.FC = () => {
         });
         if (response.ok) {
             const newProjectData = await response.json();
-            setProjects(prev => [...prev, formatProject(newProjectData)]);
+            setProjects(prev => [...prev, newProjectData]);
         } else {
             console.error("Failed to add project");
         }
@@ -120,7 +117,7 @@ const App: React.FC = () => {
         });
         if (response.ok) {
             const savedProject = await response.json();
-            setProjects(prev => prev.map(p => p.id === savedProject.id.toString() ? formatProject(savedProject) : p));
+            setProjects(prev => prev.map(p => p.id === savedProject.id ? savedProject : p));
         } else {
             console.error("Failed to update project");
         }
@@ -147,7 +144,7 @@ const App: React.FC = () => {
         });
         if (response.ok) {
             const newTaskData = await response.json();
-            setTasks(prev => [...prev, formatTask(newTaskData)]);
+            setTasks(prev => [...prev, newTaskData]);
         } else {
             console.error("Failed to add task");
         }
@@ -161,7 +158,7 @@ const App: React.FC = () => {
         });
         if (response.ok) {
             const savedTask = await response.json();
-            setTasks(prev => prev.map(t => t.id === savedTask.id.toString() ? formatTask(savedTask) : t));
+            setTasks(prev => prev.map(t => t.id === savedTask.id ? savedTask : t));
         } else {
             console.error("Failed to update task");
         }

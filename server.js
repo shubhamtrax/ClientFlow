@@ -1,190 +1,133 @@
 import express from 'express';
 import path from 'path';
 import cors from 'cors';
-import { MongoClient, ServerApiVersion } from 'mongodb';
+import { createClient } from '@supabase/supabase-js';
 import { fileURLToPath } from 'url';
 
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+// --- Environment and Supabase Setup ---
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
-// --- MongoDB Atlas Database Connection ---
-const MONGO_URI = process.env.MONGO_URI;
-if (!MONGO_URI) {
-    console.error('FATAL ERROR: MONGO_URI environment variable is not set.');
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    console.error('FATAL ERROR: Supabase environment variables SUPABASE_URL and SUPABASE_ANON_KEY are not set.');
     process.exit(1);
 }
 
-const mongoClient = new MongoClient(MONGO_URI, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '10mb' })); // Increased limit for base64 logos
 
-let dataCollection;
-
-async function connectDB() {
-    try {
-        await mongoClient.connect();
-        const db = mongoClient.db("ClientHubDB"); // You can name your database anything
-        dataCollection = db.collection("data");
-        console.log("Successfully connected to MongoDB Atlas!");
-    } catch (err) {
-        console.error("Failed to connect to MongoDB", err);
-        process.exit(1);
-    }
-}
-
-// Default structure for the database if it's empty
-const defaultData = { 
-    clients: [], 
-    projects: [], 
-    tasks: [], 
-    nextId: { client: 1, project: 1, task: 1 } 
+// --- API Error Handling ---
+const handleSupabaseError = (res, error, resource = 'Item') => {
+    console.error(`Supabase error for ${resource}:`, error.message);
+    res.status(500).json({ error: error.message });
 };
 
-// --- API MIDDLEWARE & ROUTES ---
-
-// Middleware to fetch app data for each request
-const handleRequest = (handler) => async (req, res) => {
-    try {
-        let appData = await dataCollection.findOne({ _id: "main_data" });
-        if (!appData) {
-            console.log("No data found, seeding database with default structure.");
-            await dataCollection.insertOne({ _id: "main_data", ...defaultData });
-            appData = await dataCollection.findOne({ _id: "main_data" });
-        }
-        await handler(req, res, appData);
-    } catch (err) {
-        console.error("API Error:", err.message);
-        res.status(500).json({ error: "An internal server error occurred.", details: err.message });
+const handleNotFound = (res, data, resource = 'Item', id = '') => {
+    if (!data) {
+        return res.status(404).json({ error: `${resource} with ID ${id} not found.` });
     }
+    return true; // Indicates success, allowing chaining
 };
-
-const send404 = (res, type, id) => res.status(404).json({ error: `${type} with ID ${id} not found.` });
 
 // == Clients API ==
-app.get('/api/clients', handleRequest(async (req, res, appData) => {
-    res.json([...appData.clients].sort((a, b) => a.name.localeCompare(b.name)));
-}));
+app.get('/api/clients', async (req, res) => {
+    const { data, error } = await supabase.from('clients').select('*').order('name');
+    if (error) return handleSupabaseError(res, error, 'Clients');
+    res.json(data);
+});
 
-app.post('/api/clients', handleRequest(async (req, res, appData) => {
-    const newClient = { id: appData.nextId.client++, ...req.body };
-    appData.clients.push(newClient);
-    await dataCollection.updateOne({ _id: "main_data" }, { $set: { clients: appData.clients, nextId: appData.nextId } });
-    res.status(201).json(newClient);
-}));
+app.post('/api/clients', async (req, res) => {
+    const { id, ...clientData } = req.body; // Ensure no ID is passed on creation
+    const { data, error } = await supabase.from('clients').insert(clientData).select().single();
+    if (error) return handleSupabaseError(res, error, 'Client');
+    res.status(201).json(data);
+});
 
-app.put('/api/clients/:id', handleRequest(async (req, res, appData) => {
-    const id = Number(req.params.id);
-    const clientIndex = appData.clients.findIndex(c => c.id === id);
-    if (clientIndex !== -1) {
-        const { id: bodyId, ...clientData } = req.body;
-        appData.clients[clientIndex] = { ...appData.clients[clientIndex], ...clientData };
-        await dataCollection.updateOne({ _id: "main_data" }, { $set: { clients: appData.clients } });
-        res.json(appData.clients[clientIndex]);
-    } else {
-        send404(res, 'Client', id);
+app.put('/api/clients/:id', async (req, res) => {
+    const { id } = req.params;
+    const { id: bodyId, ...clientData } = req.body;
+    const { data, error } = await supabase.from('clients').update(clientData).eq('id', id).select().single();
+    if (error) return handleSupabaseError(res, error, 'Client');
+    if (handleNotFound(res, data, 'Client', id)) {
+        res.json(data);
     }
-}));
+});
 
-app.delete('/api/clients/:id', handleRequest(async (req, res, appData) => {
-    const id = Number(req.params.id);
-    const clientExists = appData.clients.some(c => c.id === id);
-    if (!clientExists) return send404(res, 'Client', id);
-    
-    const projectIdsToDelete = appData.projects
-        .filter(p => p.clientId == id)
-        .map(p => String(p.id));
-
-    appData.tasks = appData.tasks.filter(t => !projectIdsToDelete.includes(t.projectId));
-    appData.projects = appData.projects.filter(p => p.clientId != id);
-    appData.clients = appData.clients.filter(c => c.id !== id);
-    
-    await dataCollection.updateOne({ _id: "main_data" }, { $set: { tasks: appData.tasks, projects: appData.projects, clients: appData.clients } });
+app.delete('/api/clients/:id', async (req, res) => {
+    const { id } = req.params;
+    // With "ON DELETE CASCADE" in the database schema, Supabase handles deleting related projects and tasks.
+    const { error } = await supabase.from('clients').delete().eq('id', id);
+    if (error) return handleSupabaseError(res, error, 'Client');
     res.status(204).send();
-}));
+});
+
 
 // == Projects API ==
-app.get('/api/projects', handleRequest(async (req, res, appData) => {
-    const sortedProjects = [...appData.projects].sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
-    res.json(sortedProjects);
-}));
+app.get('/api/projects', async (req, res) => {
+    const { data, error } = await supabase.from('projects').select('*').order('deadline');
+    if (error) return handleSupabaseError(res, error, 'Projects');
+    res.json(data);
+});
 
-app.post('/api/projects', handleRequest(async (req, res, appData) => {
-    const newProject = { 
-        id: appData.nextId.project++, 
-        ...req.body,
-        budget: Number(req.body.budget) || 0,
-        progress: Number(req.body.progress) || 0
-    };
-    appData.projects.push(newProject);
-    await dataCollection.updateOne({ _id: "main_data" }, { $set: { projects: appData.projects, nextId: appData.nextId } });
-    res.status(201).json(newProject);
-}));
+app.post('/api/projects', async (req, res) => {
+    const { id, ...projectData } = req.body;
+    const { data, error } = await supabase.from('projects').insert(projectData).select().single();
+    if (error) return handleSupabaseError(res, error, 'Project');
+    res.status(201).json(data);
+});
 
-app.put('/api/projects/:id', handleRequest(async (req, res, appData) => {
-    const id = Number(req.params.id);
-    const projectIndex = appData.projects.findIndex(p => p.id === id);
-    if (projectIndex !== -1) {
-        const { id: bodyId, ...projectData } = req.body;
-        appData.projects[projectIndex] = { 
-            ...appData.projects[projectIndex], 
-            ...projectData,
-            budget: Number(projectData.budget) || 0,
-            progress: Number(projectData.progress) || 0
-        };
-        await dataCollection.updateOne({ _id: "main_data" }, { $set: { projects: appData.projects } });
-        res.json(appData.projects[projectIndex]);
-    } else {
-        send404(res, 'Project', id);
+app.put('/api/projects/:id', async (req, res) => {
+    const { id } = req.params;
+    const { id: bodyId, ...projectData } = req.body;
+    const { data, error } = await supabase.from('projects').update(projectData).eq('id', id).select().single();
+    if (error) return handleSupabaseError(res, error, 'Project');
+    if (handleNotFound(res, data, 'Project', id)) {
+        res.json(data);
     }
-}));
+});
 
-app.delete('/api/projects/:id', handleRequest(async (req, res, appData) => {
-    const id = Number(req.params.id);
-    if (!appData.projects.some(p => p.id === id)) return send404(res, 'Project', id);
-    appData.tasks = appData.tasks.filter(t => t.projectId != id);
-    appData.projects = appData.projects.filter(p => p.id !== id);
-    await dataCollection.updateOne({ _id: "main_data" }, { $set: { tasks: appData.tasks, projects: appData.projects } });
+app.delete('/api/projects/:id', async (req, res) => {
+    const { id } = req.params;
+    // With "ON DELETE CASCADE", Supabase handles deleting related tasks.
+    const { error } = await supabase.from('projects').delete().eq('id', id);
+    if (error) return handleSupabaseError(res, error, 'Project');
     res.status(204).send();
-}));
+});
+
 
 // == Tasks API ==
-app.get('/api/tasks', handleRequest(async (req, res, appData) => {
-    const sortedTasks = [...appData.tasks].sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-    res.json(sortedTasks);
-}));
+app.get('/api/tasks', async (req, res) => {
+    const { data, error } = await supabase.from('tasks').select('*').order('dueDate');
+    if (error) return handleSupabaseError(res, error, 'Tasks');
+    res.json(data);
+});
 
-app.post('/api/tasks', handleRequest(async (req, res, appData) => {
-    const newTask = { id: appData.nextId.task++, ...req.body };
-    appData.tasks.push(newTask);
-    await dataCollection.updateOne({ _id: "main_data" }, { $set: { tasks: appData.tasks, nextId: appData.nextId } });
-    res.status(201).json(newTask);
-}));
+app.post('/api/tasks', async (req, res) => {
+    const { id, ...taskData } = req.body;
+    const { data, error } = await supabase.from('tasks').insert(taskData).select().single();
+    if (error) return handleSupabaseError(res, error, 'Task');
+    res.status(201).json(data);
+});
 
-app.put('/api/tasks/:id', handleRequest(async (req, res, appData) => {
-    const id = Number(req.params.id);
-    const taskIndex = appData.tasks.findIndex(t => t.id === id);
-    if (taskIndex !== -1) {
-        const { id: bodyId, ...taskData } = req.body;
-        appData.tasks[taskIndex] = { ...appData.tasks[taskIndex], ...taskData };
-        await dataCollection.updateOne({ _id: "main_data" }, { $set: { tasks: appData.tasks } });
-        res.json(appData.tasks[taskIndex]);
-    } else {
-        send404(res, 'Task', id);
+app.put('/api/tasks/:id', async (req, res) => {
+    const { id } = req.params;
+    const { id: bodyId, ...taskData } = req.body;
+    const { data, error } = await supabase.from('tasks').update(taskData).eq('id', id).select().single();
+    if (error) return handleSupabaseError(res, error, 'Task');
+    if (handleNotFound(res, data, 'Task', id)) {
+        res.json(data);
     }
-}));
+});
 
-app.delete('/api/tasks/:id', handleRequest(async (req, res, appData) => {
-    const id = Number(req.params.id);
-    if (!appData.tasks.some(t => t.id === id)) return send404(res, 'Task', id);
-    appData.tasks = appData.tasks.filter(t => t.id !== id);
-    await dataCollection.updateOne({ _id: "main_data" }, { $set: { tasks: appData.tasks } });
+app.delete('/api/tasks/:id', async (req, res) => {
+    const { id } = req.params;
+    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    if (error) return handleSupabaseError(res, error, 'Task');
     res.status(204).send();
-}));
+});
+
 
 // --- SERVE FRONTEND ---
 const __filename = fileURLToPath(import.meta.url);
@@ -196,6 +139,6 @@ app.get('*', (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    connectDB(); // Connect to DB when server starts
     console.log(`Server is running on port ${PORT}`);
+    console.log('Connecting to Supabase...');
 });
