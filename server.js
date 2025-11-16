@@ -3,6 +3,10 @@ import path from 'path';
 import cors from 'cors';
 import { createClient } from '@supabase/supabase-js';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+
+// Load environment variables from .env file for local development
+dotenv.config();
 
 // --- Environment and Supabase Setup ---
 const SUPABASE_URL = process.env.SUPABASE_URL;
